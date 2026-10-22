@@ -8,6 +8,7 @@
 
 use switchyard_desktop::{config, health};
 mod history;
+mod pricing;
 mod rollup;
 mod summary;
 
@@ -95,8 +96,15 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let rates = match pricing::load(config.prices_file.as_deref()) {
+        Ok(rates) => rates,
+        Err(error) => {
+            eprintln!("switchyard-desktop: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     let status = health::probe(&config.server_url);
-    for row in summary::build(status, &usage, &config) {
+    for row in summary::build(status, &usage, &config, &rates) {
         println!("{row}");
     }
     ExitCode::SUCCESS
