@@ -13,6 +13,7 @@ mod controller;
 mod history;
 mod pricing;
 mod rollup;
+mod server;
 mod sessions;
 mod summary;
 mod tui;
