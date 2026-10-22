@@ -12,7 +12,7 @@
 use switchyard_desktop::{config, health};
 mod controller;
 mod history;
-
+mod models;
 mod pricing;
 mod rollup;
 mod server;
