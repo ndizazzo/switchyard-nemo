@@ -3,6 +3,9 @@
 
 //! This module turns totals and recorded costs into usage summary rows.
 
+use switchyard_costs::Pricing;
+
+use crate::pricing::{Estimate, Savings};
 use crate::rollup::{Totals, Usage};
 use switchyard_desktop::config::Config;
 use switchyard_desktop::health::ServerStatus;
@@ -11,7 +14,7 @@ use switchyard_desktop::health::ServerStatus;
 const MAX_MODEL_ROWS: usize = 5;
 
 /// This function builds the menu body for the current day and trailing week.
-pub fn build(status: ServerStatus, usage: &Usage, config: &Config) -> Vec<String> {
+pub fn build(status: ServerStatus, usage: &Usage, config: &Config, rates: &Pricing) -> Vec<String> {
     let state = match status {
         ServerStatus::Running => "running",
         ServerStatus::Stopped => "not responding",
@@ -30,9 +33,9 @@ pub fn build(status: ServerStatus, usage: &Usage, config: &Config) -> Vec<String
         return rows;
     }
 
-    rows.extend(period("Today", &usage.today));
+    rows.extend(period("Today", &usage.today, config, rates));
     rows.push(String::new());
-    rows.extend(period("This week", &usage.week));
+    rows.extend(period("This week", &usage.week, config, rates));
 
     let models = model_shares(&usage.week);
     if !models.is_empty() {
@@ -48,10 +51,16 @@ pub fn build(status: ServerStatus, usage: &Usage, config: &Config) -> Vec<String
         .values()
         .map(|tokens| tokens.uncounted)
         .sum();
-    if unknown > 0 {
+    if !rates.contains(&config.baseline_model) {
+        rows.push(String::new());
+        rows.push(match config.prices_file.as_ref() {
+            Some(path) => format!("Add {} to {} to see savings", config.baseline_model, path.display()),
+            None => format!("Bundled prices have no rates for {}. Set pricing_file to a custom table to see savings.", config.baseline_model),
+        });
+    } else if unknown > 0 {
         rows.push(String::new());
         rows.push(format!(
-            "Spending incomplete for this week: {unknown} {} no recorded cost",
+            "Savings hidden for this week: {unknown} {} no recorded cost",
             if unknown == 1 {
                 "call has"
             } else {
@@ -60,23 +69,60 @@ pub fn build(status: ServerStatus, usage: &Usage, config: &Config) -> Vec<String
         ));
     } else if uncounted > 0 {
         rows.push(String::new());
-        rows.push(format!("Uncounted answers this week: {uncounted}"));
+        let answers = if uncounted == 1 {
+            "answer has"
+        } else {
+            "answers have"
+        };
+        rows.push(format!(
+            "Savings hidden for this week: {uncounted} {answers} no token counts"
+        ));
     }
     rows
 }
 
-fn period(name: &str, totals: &Totals) -> Vec<String> {
+fn period(name: &str, totals: &Totals, config: &Config, rates: &Pricing) -> Vec<String> {
     let requests = totals.requests();
     let mut rows = vec![format!(
         "{name} — {requests} request{} · {} tokens",
         if requests == 1 { "" } else { "s" },
         tokens(totals.tokens())
     )];
-    let cost = totals.cost();
-    if let Some(actual) = cost.total_usd {
-        rows.push(format!("    Spent {}", money(actual)));
+    rows.extend(cost_rows(&Estimate::new(
+        totals,
+        rates,
+        &config.baseline_model,
+    )));
+    rows
+}
+
+/// This function formats a period's recorded spending and, when it is known, the savings.
+pub fn cost_rows(estimate: &Estimate) -> Vec<String> {
+    let mut rows = vec![match estimate.actual {
+        Some(actual) => format!("    Spent {}", money(actual)),
+        None => format!(
+            "    Known spending {} · total unknown ({} {} no recorded cost)",
+            money(estimate.known),
+            estimate.unknown_calls,
+            if estimate.unknown_calls == 1 {
+                "call has"
+            } else {
+                "calls have"
+            },
+        ),
+    }];
+    if let Some(savings) = estimate.savings() {
+        rows.push(format!("    Saved {}", saved(&savings)));
     }
     rows
+}
+
+fn saved(savings: &Savings) -> String {
+    let amount = money(savings.saved());
+    match savings.percent() {
+        Some(percent) => format!("{amount} ({percent:.0}% of {})", money(savings.baseline)),
+        None => amount,
+    }
 }
 
 fn model_shares(week: &Totals) -> Vec<String> {
