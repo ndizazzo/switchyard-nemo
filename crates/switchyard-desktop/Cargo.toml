@@ -12,6 +12,7 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 publish = false
+default-run = "switchyard-desktop"
 
 [dependencies]
 switchyard-runner.workspace = true
