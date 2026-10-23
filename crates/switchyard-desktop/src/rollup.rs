@@ -42,6 +42,7 @@ impl ModelTokens {
         self.input + self.cached_input + self.cache_write + self.output
     }
 
+    /// This method adds totals from a disjoint set of calls.
     pub fn add(&mut self, other: &Self) {
         self.requests += other.requests;
         self.input += other.input;
@@ -69,6 +70,7 @@ pub struct Totals {
 }
 
 impl Totals {
+    /// Each call contributes to its answer or classifier totals and its route totals.
     fn add(&mut self, record: &Entry) {
         let bucket = if record.tier == CLASSIFIER_TIER {
             &mut self.classifier
@@ -83,6 +85,7 @@ impl Totals {
             .add(&tokens);
     }
 
+    /// This method adds totals from a disjoint period without counting route totals twice.
     fn merge(&mut self, other: &Self) {
         for (own, incoming) in [
             (&mut self.routed, &other.routed),
