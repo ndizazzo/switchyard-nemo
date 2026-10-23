@@ -37,6 +37,7 @@ const TRAY_ID: &str = "main";
 struct TrayUsage {
     settings: PathBuf,
     reader: Mutex<crate::rollup::Reader>,
+    health: switchyard_desktop::health::Probe,
     // The menu is rebuilt only when these rows change, so an open menu does not flicker.
     rows: Mutex<Vec<String>>,
 }
@@ -86,7 +87,7 @@ impl TrayUsage {
             errors.push(format!("Could not read model prices: {error}"));
             Default::default()
         });
-        let status = switchyard_desktop::health::probe(&config.server_url);
+        let status = self.health.probe(&config.server_url);
         TrayView {
             overview: Some(Overview::new(status, &usage, &config, &rates)),
             errors,
@@ -437,7 +438,7 @@ fn tray_size(app: tauri::AppHandle, height: f64) -> Result<(), String> {
 
 #[tauri::command]
 fn tray_page(app: tauri::AppHandle, page: String) -> Result<(), String> {
-    if !matches!(page.as_str(), "overview" | "install" | "settings") {
+    if !matches!(page.as_str(), "overview" | "install" | "settings" | "setup") {
         return Err("Choose Overview, Connect tools, or Settings.".into());
     }
     open_page(&app, &page);
@@ -578,6 +579,7 @@ pub fn run(controller: Controller, settings: PathBuf) -> Result<(), String> {
         .manage(TrayUsage {
             settings,
             reader: Mutex::new(crate::rollup::Reader::default()),
+            health: switchyard_desktop::health::Probe::default(),
             rows: Mutex::new(Vec::new()),
         })
         .invoke_handler(tauri::generate_handler![

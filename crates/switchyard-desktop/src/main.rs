@@ -158,13 +158,19 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        let status = health::probe(&config.server_url);
+        let status = health::Probe::default().probe(&config.server_url);
         for row in summary::build(status, &usage, &config, &rates) {
             println!("{row}");
         }
         return ExitCode::SUCCESS;
     }
 
+    if !settings.try_exists().unwrap_or(true)
+        && matches!(config::needs_setup(&settings), Ok(false))
+        && let Err(error) = config::save_configuration(&settings, &config, false)
+    {
+        eprintln!("switchyard-desktop: {error}");
+    }
     let controller = controller::Controller::new(config, settings.clone());
     if terminal {
         #[cfg(windows)]

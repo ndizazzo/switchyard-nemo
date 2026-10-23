@@ -40,8 +40,8 @@ const accountView = {tool:'codex_cli',name:''};
 const activity = [];
 const connectedTools=new Set();
 let sessionOpened=false;
-let preferencesDraft;
-const pageNames = {overview:'Overview',routes:'Routes',install:'Connect tools',usage:'Usage',sessions:'Sessions',settings:'Settings'};
+let configurationDraft;
+const pageNames = {overview:'Overview',routes:'Routes',install:'Connect tools',usage:'Usage',sessions:'Sessions',settings:'Settings',setup:'Set up Switchyard'};
 let operationQueue = Promise.resolve(),ipcQueue=Promise.resolve();
 // The native controller accepts one operation at a time; queued reads leave the page usable.
 function request(command,args){const captured=args===undefined?undefined:structuredClone(args);const pending=ipcQueue.then(()=>invoke(command,captured));ipcQueue=pending.catch(()=>{});return pending;}
@@ -135,8 +135,9 @@ async function refresh(force = true) {
     if(!force&&(busy||document.querySelector('[role="dialog"]')||choosing()))return;
     // The user may navigate during the read, so capture the current page after the reply.
     const saved=snapshot?capturePageState():null;
+    if(!snapshot && latest.needs_setup)page='setup';
     snapshot=latest;lastRefresh=new Date();stale=false;
-    if(force || ['overview','usage','settings'].includes(page)) {render();if(saved)restorePageState(saved);}
+    if(force || ['overview','usage','settings','setup'].includes(page)) {render();if(saved)restorePageState(saved);}
     showPageErrors((snapshot.errors||[]).join('\n'));showFreshness();
   } catch(error) {stale=true;showPageErrors(`Could not refresh the page: ${error}`);showFreshness();if(!snapshot)renderRecovery(String(error));}
   finally {reading=false;document.querySelector('#refresh').setAttribute?.('aria-busy','false');}
@@ -195,6 +196,7 @@ function render() {
   } else if(page==='usage')renderUsage();
   else if(page==='sessions'){renderSessions();renderAccounts();}
   else if(page==='settings')renderSettings();
+  else if(page==='setup')renderConfiguration(true);
   showFreshness();
 }
 function usageUnavailable() {return snapshot.data_state.usage.state==='unavailable'||snapshot.data_state.history.state==='unavailable';}
@@ -335,28 +337,50 @@ function renderSettings() {
   if(snapshot.update_status){const state=snapshot.update_status;update.append(node('p',`${state.state||'No update running'}${state.stage?` · ${state.stage}`:''}: ${state.message||''}`));}
   button(actions(update),'Review update…',async()=>{const result=await run({kind:'preview_update'},false);if(!result)return;const unsaved=[...drafts.values()].some(d=>d.dirty);confirmAction('Build and reinstall?',`${updatePreviewText(result.data)}${unsaved?'\n\nYou have unsaved route edits. Cancel and save or discard them before updating.':''}`,'Build and reinstall',()=>{if(unsaved){notify('Save or discard route drafts before updating.','warning');return;}run({kind:'update',preview_token:result.data.preview_token});});});
   button(actions(update),'Open update log',()=>run({kind:'open_update_log'},false));
-  renderPreferences();
+  renderConfiguration(false);
+  button(actions(c),'Run setup again',()=>{configurationDraft=undefined;navigate('setup');});
+  mutation(actions(c),'Remove app preferences…',async()=>{
+    const result=await run({kind:'preview_reset_settings'},false);if(!result)return;
+    confirmAction('Remove app preferences?',`${result.data.message}\n\nFile: ${result.data.file}`,'Remove preferences',async()=>{
+      const removed=await run({kind:'reset_settings',preview_token:result.data.preview_token});
+      if(removed){configurationDraft=undefined;navigate('settings');}
+    });
+  });
   const display=card('Display');const zoom=field(display,'Text size',combobox([['100','100%'],['125','125%'],['150','150%'],['200','200%']],String(Math.round(Number(document.documentElement.style.zoom||1)*100))));zoom.onchange=()=>{document.documentElement.style.zoom=String(Number(zoom.value)/100);document.documentElement.style.setProperty('--ui-scale',String(Number(zoom.value)/100));document.body.classList.toggle('enlarged',Number(zoom.value)>=150);};
   const recent=card('Recent actions');for(const item of activity)recent.append(node('p',`${item.time} · ${item.message}`));if(!activity.length)recent.append(node('p','Actions from this app session appear here.'));
   c.append(node('p','Closing the window keeps the app in the menu bar and the server running. Quit Switchyard exits the app; Restart controls the server.'));text(c,'Terminal: switchyard-desktop --tui');
 }
 
-function renderPreferences() {
-  const c=card('Savings baseline and refresh');
-  if(!preferencesDraft)preferencesDraft={baseline:snapshot.baseline_model,refresh:String(snapshot.refresh_seconds)};
-  const draft=preferencesDraft;
-  const baseline=field(c,'Baseline model ID',input(draft.baseline)),refreshInterval=field(c,'Refresh interval in seconds',input(draft.refresh,'number'));refreshInterval.min='1';refreshInterval.step='1';
-  const prices=snapshot.settings?.prices_file;
-  c.append(node('p',`Savings compare each call’s recorded cost with the same answer tokens at the baseline model’s rates. ${prices?`The custom price table is ${prices}. The server must use the same file; restart it after editing the rates.`:'The server and app use bundled rates in dollars per million tokens. Set pricing_file in app settings and pass the same file to the server with --pricing-file to use custom rates.'}`));
-  button(actions(c),prices?'Open model price override':'About model prices',()=>run({kind:'open_prices'},false));
-  baseline.oninput=()=>{draft.baseline=baseline.value;fieldError(baseline,'');};refreshInterval.oninput=()=>{draft.refresh=refreshInterval.value;fieldError(refreshInterval,'');};
-  mutation(actions(c),'Save app settings',async()=>{
-    let valid=fieldError(baseline,!draft.baseline.trim()||/[\n\r]/.test(draft.baseline)?'Enter a baseline model ID without line breaks.':'');
-    valid=fieldError(refreshInterval,!Number.isSafeInteger(Number(draft.refresh))||Number(draft.refresh)<1?'Enter a whole number of at least one second.':'')&&valid;
-    if(!valid){c.querySelector('[aria-invalid="true"]')?.focus();return;}
-    const result=await run({kind:'save_preferences',baseline_model:draft.baseline,refresh_seconds:Number(draft.refresh)});if(result){preferencesDraft=undefined;render();}
+// Setup and Settings submit the same configuration fields and preserve drafts during refreshes.
+function renderConfiguration(setup) {
+  const c=card(setup?'Choose your Switchyard configuration':'Configuration');
+  c.append(node('p',setup?'Use an existing server config or create one from the bundled defaults. Reinstalling keeps these files and skips this screen.':'Changes are saved in app settings. Restart the installed server to load a different config, log, or price file.'));
+  if(snapshot.configuration_error)c.append(node('p',`The saved settings need repair: ${snapshot.configuration_error}. Open app settings to fix syntax errors or unknown keys.`,'warning-note'));
+  if(!configurationDraft){
+    const saved=snapshot.settings||{};
+    configurationDraft={server_url:saved.server_url||'',config_file:saved.config_file||'',routing_log:saved.routing_log||'',pricing_file:saved.prices_file||'',launchd_label:saved.launchd_label||'',baseline_model:saved.baseline_model||snapshot.baseline_model||'',refresh_seconds:String(saved.refresh_seconds||snapshot.refresh_seconds||30),create_server:Boolean(snapshot.needs_setup)};
+  }
+  const draft=configurationDraft;
+  const mode=field(c,'Server configuration',combobox([['existing','Use an existing file'],['create','Create a file from bundled defaults']],draft.create_server?'create':'existing'));
+  mode.onchange=()=>{draft.create_server=mode.value==='create';};
+  for(const [key,label,file] of [['config_file','Server config file',true],['server_url','Server address',false],['routing_log','Routing log file',true],['pricing_file','Model price override (optional)',true],['baseline_model','Baseline model ID',false],['refresh_seconds','Refresh interval in seconds',false]]){
+    const control=field(c,label,input(draft[key],key==='refresh_seconds'?'number':'text'));
+    control.oninput=()=>{draft[key]=control.value;fieldError(control,'');};
+    if(file)button(actions(c),'Choose '+label.toLowerCase()+'…',()=>choosePath(control,false,()=>{draft[key]=control.value;}));
+  }
+  c.append(node('p','Leave the model price override empty to use bundled rates. Creating a server config never replaces an existing file.'));
+  c.append(node('p','Savings compare each call’s recorded cost with the same answer tokens at the baseline model’s rates. Rates are in dollars per million tokens. The app and installed server use the selected price file.'));
+  mutation(actions(c),setup?'Save setup':'Save configuration',async()=>{
+    const config={server_url:draft.server_url,config_file:draft.config_file,routing_log:draft.routing_log,pricing_file:draft.pricing_file||undefined,launchd_label:draft.launchd_label,baseline_model:draft.baseline_model,refresh_seconds:Number(draft.refresh_seconds)};
+    if(!Number.isSafeInteger(config.refresh_seconds)||config.refresh_seconds<1){notify('Enter a whole refresh interval of at least one second.','error');return;}
+    confirmAction('Save configuration?',`${draft.create_server?'Create':'Use'} server config: ${config.config_file}\nServer: ${config.server_url}\nRouting log: ${config.routing_log}\nModel prices: ${config.pricing_file||'Bundled rates'}\n\nSave app settings in ${snapshot.settings?.path}. Existing server files, credentials, and history are preserved.`,'Save',async()=>{
+      const result=await run({kind:'save_configuration',config,create_server:draft.create_server});
+      if(result){configurationDraft=undefined;navigate('settings');}
+    });
   },true);
+  button(actions(c),'Open app settings',()=>run({kind:'open_settings'},false));
 }
+
 
 function draftKey(route) {return `${snapshot.settings?.config_file||generation}:${route.key}`;}
 function routeSummary(route){return route.choices.map(c=>`${c.client} / ${c.model}`).join(' → ');}
